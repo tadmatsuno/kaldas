@@ -180,12 +180,18 @@ def SamplePMraPMdec(pmra,pmdec,\
   mean  = np.array([pmra,pmdec])
 
 
-  sampletmp = np.random.multivariate_normal(\
+  samples = np.random.multivariate_normal(\
               mean=mean,\
               cov=covariance,\
               size=size)
   pmra_out,pmdec_out = samples[0:size,0],samples[0:size,1]
   return pmra_out,pmdec_out
+
+def get_Lcirc(potential,E):
+  rcirc = potential.Rcirc(E=E)
+  position = np.column_stack((rcirc, rcirc*0, rcirc*0)) 
+  Lcirc = rcirc*np.sqrt(-rcirc*potential.force(position)[:,0])
+  return Lcirc
 
 def get_output_values(ra,dec,dist,pmra,pmdec,rv,\
                       gc_frame,units,potential,actf,unique_id=None,\
@@ -214,7 +220,7 @@ def get_output_values(ra,dec,dist,pmra,pmdec,rv,\
                      default 13.8 Gyr
     Output
       output_dict
-        x, y, z, vx, vy, vz, vr, vperp, vphi, jr, jz, jphi, E
+        x, y, z, vx, vy, vz, vr, vperp, vphi, jr, jz, jphi, E, circ
         (if integrate is True) rmin, rmax, zmax, ecc, R2min, R2max
         (if angles is True) Or, Oz, Ophi
   ''' 
@@ -235,7 +241,8 @@ def get_output_values(ra,dec,dist,pmra,pmdec,rv,\
               'jr':    np.array([np.nan]).repeat(nobj),
               'jz':    np.array([np.nan]).repeat(nobj),
               'jphi':  np.array([np.nan]).repeat(nobj),
-              'E':     np.array([np.nan]).repeat(nobj)}
+              'E':     np.array([np.nan]).repeat(nobj),
+              'circ':  np.array([np.nan]).repeat(nobj)}
   positions = np.array([np.nan]).repeat(9*nobj).reshape(nobj,9)
   # 9 is used instead of 6 to ensure that the memory is sufficient
   del positions
@@ -327,6 +334,7 @@ def get_output_values(ra,dec,dist,pmra,pmdec,rv,\
   # energy
   out_dict['E'] = potential.potential(positions[:,0:3])+\
                   0.5*np.sum(positions[:,3:6]**2,axis=1)
+  out_dict['circ'] = out_dict['jphi']/get_Lcirc(potential,out_dict['E')
 
   # positions
   out_dict['x'],out_dict['y'],out_dict['z'],\
@@ -595,17 +603,26 @@ class GetKinematicsAll:
 
    def read_clean_data(self,fileformat='fits'):
      ## Read
-     data = table.Table.read(self.infile,format=fileformat)
+     if fileformat == 'hdf5':
+       import vaex
+       data = vaex.open(self.infile).to_astropy_table()
+     else:
+       data = table.Table.read(self.infile,format=fileformat)
      ## Check if columns exist
      for l1,l2 in self.label.items():
        if not l2 in data.columns:
          print('{0:s} (as {1:s}) is not in the columns'.format(l1,l2))
+       if l2 in ['parallax_pmra_corr','parallax_pmdec_corr','pmra_pmdec_corr']:
+         print('Correlation is set to zero')
+         data[l2] = 0.0
      ## Correct for the zero point     
      if self.distance_source in ['BJ','plx']:
        data[self.label['parallax']] = data[self.label['parallax']] - \
                                       self.plx_0pt
      ## Filter the data
      for l1,l2 in self.label.items():
+       if l1 == 'unique_id': 
+         continue
        ndatain = len(data)
        data = data[np.isfinite(np.array(data[l2]))]
        if (ndatain != len(data)):
@@ -851,7 +868,7 @@ class GetKinematicsAll:
                              (' {:'+self.output_fmt+'}')*9*len(outputkeys)+\
                              '\n'
          else: # Just open for istep > 1
-           fout = open(self.outasobserved,'a')
+           fout = open(self.outmcsummary,'a')
       
          # Write results for this round
          for oneobj_out in zip(np.array(step_input[self.label['unique_id']]),\
