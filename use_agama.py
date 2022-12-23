@@ -180,7 +180,7 @@ def SamplePMraPMdec(pmra,pmdec,\
   mean  = np.array([pmra,pmdec])
 
 
-  sampletmp = np.random.multivariate_normal(\
+  samples = np.random.multivariate_normal(\
               mean=mean,\
               cov=covariance,\
               size=size)
@@ -349,7 +349,8 @@ def get_errorestimatesMC(ra,dec,plxdist,pmra,pmdec,rv,nmc,\
                                rscale = None,isplxdist='plx',\
                                nTcirc_integ=10,np_per_orbit=1000,\
                                maxTintegrate = 13.8,\
-                               angles=True,integrate=True):
+                               angles=True,integrate=True, \
+                               outputdir_mcsample = None):
   '''
     Output (example)
       output_dict = {'jr': {'mean'  : mean,
@@ -445,9 +446,12 @@ def get_errorestimatesMC(ra,dec,plxdist,pmra,pmdec,rv,nmc,\
               angles= angles,\
               integrate = integrate)
       # Store results
-      if istep == 1: # For the first iteration
-        for key,value in resultstmp.items():
-          _valuetmp = value.reshape(iendobj-istart,nmc)
+      for key,value in resultstmp.items():
+        _valuetmp = value.reshape(iendobj-istart,nmc)
+
+        if outputdir_mcsample is not None:
+          np.save(outputdir_mcsample + f'/{key}{istep:d}.npy', value)
+        if istep == 1: # For the first iteration
           output_dict[key] = {'mean'   : np.nanmean(_valuetmp,axis=1),
                            'median' : np.nanmedian(_valuetmp,axis=1),
                            'std'    : np.nanstd(_valuetmp,axis=1),
@@ -457,9 +461,7 @@ def get_errorestimatesMC(ra,dec,plxdist,pmra,pmdec,rv,nmc,\
                            'q75'    : np.nanpercentile(_valuetmp,75.000,axis=1),
                            'q84'    : np.nanpercentile(_valuetmp,84.135,axis=1),
                            'q98'    : np.nanpercentile(_valuetmp,97.725,axis=1)}
-      else:
-        for key,value in resultstmp.items():
-          _valuetmp = value.reshape(iendobj-istart,nmc)
+        else:
           output_dict[key]['mean'] = \
             np.append(output_dict[key]['mean'],np.nanmean(_valuetmp,axis=1))
           output_dict[key]['median'] = \
@@ -600,12 +602,18 @@ class GetKinematicsAll:
      for l1,l2 in self.label.items():
        if not l2 in data.columns:
          print('{0:s} (as {1:s}) is not in the columns'.format(l1,l2))
+         if l2 in \
+             ['parallax_pmra_corr','parallax_pmdec_corr','pmra_pmdec_corr']:
+           print('Correlation is set to zero')
+           data[l2] = 0.0
      ## Correct for the zero point     
      if self.distance_source in ['BJ','plx']:
        data[self.label['parallax']] = data[self.label['parallax']] - \
                                       self.plx_0pt
      ## Filter the data
      for l1,l2 in self.label.items():
+       if l1 == 'unique_id': 
+         continue
        ndatain = len(data)
        data = data[np.isfinite(np.array(data[l2]))]
        if (ndatain != len(data)):
@@ -832,7 +840,8 @@ class GetKinematicsAll:
            np_per_orbit = self.np_per_orbit,
            maxTintegrate = self.maxTintegrate,\
            angles= self.angles,\
-           integrate = self.integrate)
+           integrate = self.integrate,
+           outputdir_mcsample = self.outputdir_mcsample)
 
          if outputkeys is None: # For the first iteration. write header
            outputkeys = results.keys()
@@ -851,7 +860,7 @@ class GetKinematicsAll:
                              (' {:'+self.output_fmt+'}')*9*len(outputkeys)+\
                              '\n'
          else: # Just open for istep > 1
-           fout = open(self.outasobserved,'a')
+           fout = open(self.outmcsummary,'a')
       
          # Write results for this round
          for oneobj_out in zip(np.array(step_input[self.label['unique_id']]),\
