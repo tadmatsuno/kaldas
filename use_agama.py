@@ -1,6 +1,7 @@
 ### This program is to calculate stellar kinematics using agama for a large 
 ### data set. It is primarily written by T. Matsuno (tadafumi.mn@gmail.com).
 
+import psutil
 
 from astropy import table
 import astropy.units as u
@@ -187,6 +188,12 @@ def SamplePMraPMdec(pmra,pmdec,\
   pmra_out,pmdec_out = samples[0:size,0],samples[0:size,1]
   return pmra_out,pmdec_out
 
+def get_Lcirc(potential,E):
+  rcirc = potential.Rcirc(E=E)
+  position = np.column_stack((rcirc, rcirc*0, rcirc*0)) 
+  Lcirc = rcirc*np.sqrt(-rcirc*potential.force(position)[:,0])
+  return Lcirc
+
 def get_output_values(ra,dec,dist,pmra,pmdec,rv,\
                       gc_frame,units,potential,actf,unique_id=None,\
                       nTcirc_integ=10,np_per_orbit=1000,\
@@ -214,7 +221,7 @@ def get_output_values(ra,dec,dist,pmra,pmdec,rv,\
                      default 13.8 Gyr
     Output
       output_dict
-        x, y, z, vx, vy, vz, vr, vperp, vphi, jr, jz, jphi, E
+        x, y, z, vx, vy, vz, vr, vperp, vphi, jr, jz, jphi, E, circ
         (if integrate is True) rmin, rmax, zmax, ecc, R2min, R2max
         (if angles is True) Or, Oz, Ophi
   ''' 
@@ -222,6 +229,8 @@ def get_output_values(ra,dec,dist,pmra,pmdec,rv,\
   if unique_id is None:
     unique_id = np.arange(0,nobj)
 
+  avail_mem = psutil.virtual_memory().available
+  mem_max = avail_mem*0.9
   ## Define large arrays to check if the available memory is sufficient
   out_dict = {'x':     np.array([np.nan]).repeat(nobj),
               'y':     np.array([np.nan]).repeat(nobj),
@@ -235,10 +244,9 @@ def get_output_values(ra,dec,dist,pmra,pmdec,rv,\
               'jr':    np.array([np.nan]).repeat(nobj),
               'jz':    np.array([np.nan]).repeat(nobj),
               'jphi':  np.array([np.nan]).repeat(nobj),
-              'E':     np.array([np.nan]).repeat(nobj)}
-  positions = np.array([np.nan]).repeat(9*nobj).reshape(nobj,9)
-  # 9 is used instead of 6 to ensure that the memory is sufficient
-  del positions
+              'E':     np.array([np.nan]).repeat(nobj),
+              'circ':  np.array([np.nan]).repeat(nobj)}
+
   positions = np.array([np.nan]).repeat(6*nobj).reshape(nobj,6)
 
   if integrate:
@@ -248,14 +256,16 @@ def get_output_values(ra,dec,dist,pmra,pmdec,rv,\
     out_dict['ecc']    = np.array([np.nan]).repeat(nobj)
     out_dict['R2min']  = np.array([np.nan]).repeat(nobj)
     out_dict['R2max']  = np.array([np.nan]).repeat(nobj)
-    orbits_integ = np.array([np.nan]).repeat(6*nobj*nTcirc_integ*np_per_orbit)
-    time_integ  = np.array([np.nan]).repeat(nobj*nTcirc_integ*np_per_orbit)
-    orbits_tmp  = np.array([np.nan]).repeat(int(7*nobj*nTcirc_integ*\
-                                                np_per_orbit*1.5))
+#    orbits_integ = np.array([np.nan]).repeat(6*nobj*nTcirc_integ*np_per_orbit)
+#    time_integ  = np.array([np.nan]).repeat(nobj*nTcirc_integ*np_per_orbit)
+#    orbits_tmp  = np.array([np.nan]).repeat(int(7*nobj*nTcirc_integ*\
+#                                                np_per_orbit*1.5))
     # 1.5 is a factor to ensure that the memory is sufficient
-    del orbits_tmp # Not needed now 
-    del time_integ # Not needed now 
-    del orbits_integ # Not needed now 
+    assert mem_max > (8*nobj*6 + 8*nobj*nTcirc_integ*np_per_orbit*7*2),\
+      MemoryError(f'Available{mem_max*1.0e-9:.2f} Required{8*nobj*nTcirc_integ*np_per_orbit*7*2*1.0e-9:.2f}')
+#   del orbits_tmp # Not needed now 
+#    del time_integ # Not needed now 
+#    del orbits_integ # Not needed now 
     
   if angles:
     out_dict['Or']   = np.array([np.nan]).repeat(nobj)
@@ -283,11 +293,14 @@ def get_output_values(ra,dec,dist,pmra,pmdec,rv,\
                          time = integ_time,\
                          trajsize = ntraj)
  
+    # orbit integration
     print('  {0:10.4f} sec for integration'.format(time.time()-t1))
+    t1 = time.time()
     # get orbit and time sequence from the output
     orbits_integ = np.array([_tmp1[1] for _tmp1 in orbits_tmp])
     time_integ   = np.array([_tmp1[0] for _tmp1 in orbits_tmp])
    
+    del orbits_tmp
     # save orbit to .npy file if filename is provided 
     if not out_orbits_npyfile is None:
       orbits_tmp = np.hstack([\
@@ -313,6 +326,7 @@ def get_output_values(ra,dec,dist,pmra,pmdec,rv,\
   
     del orbits_integ
     del time_integ
+    print('  {0:10.4f} sec for post processing integration'.format(time.time()-t1))
 
   t1 = time.time()
   # action calculation
@@ -327,6 +341,7 @@ def get_output_values(ra,dec,dist,pmra,pmdec,rv,\
   # energy
   out_dict['E'] = potential.potential(positions[:,0:3])+\
                   0.5*np.sum(positions[:,3:6]**2,axis=1)
+  out_dict['circ'] = out_dict['jphi']/get_Lcirc(potential,out_dict['E'])
 
   # positions
   out_dict['x'],out_dict['y'],out_dict['z'],\
@@ -365,6 +380,7 @@ def get_errorestimatesMC(ra,dec,plxdist,pmra,pmdec,rv,nmc,\
                       'jz': {....} }
   '''                      
  
+  avail_mem = psutil.virtual_memory().available
   nobj = len(np.atleast_1d(ra)) 
   if unique_id is None:
     unique_id = np.arange(0,nobj)
@@ -494,9 +510,12 @@ def get_errorestimatesMC(ra,dec,plxdist,pmra,pmdec,rv,nmc,\
 
     # Catch memory error
     except MemoryError:
-      print('Memory error has been detected')
-      print('Step size increased {0:d} -> {1:d}'.format(isplit,isplit*2))
-      isplit = isplit*2
+      if adjust:
+        print('Memory error has been detected')
+        print('Step size increased {0:d} -> {1:d}'.format(isplit,isplit*2))
+        isplit = isplit*2
+      else: 
+        raise MemoryError
   return output_dict     
 
 class GetKinematicsAll:
@@ -508,6 +527,7 @@ class GetKinematicsAll:
                 maxTintegrate = 13.8,\
                 nTcirc_integ = 20,\
                 np_per_orbit = 1000,\
+                dist_scale = 1.0,
                 output_fmt = '.3f',\
                 outputdir_trajectory=None, outputdir_mcsample=None):
      # Store input parameters 
@@ -547,6 +567,7 @@ class GetKinematicsAll:
      elif self.distance_source == 'plx': 
        droplabel = ['dist','dist_error','r_est','r_len']       
      elif self.distance_source == 'dist': 
+       self.dist_scale = dist_scale
        droplabel = ['r_est','r_len','parallax','parallax_error',\
                     'parallax_pmra_corr','parallax_pmdec_corr']
      [self.label.pop(dl) for dl in droplabel]
@@ -574,12 +595,11 @@ class GetKinematicsAll:
 
      # Create ActionFinder and potential
      if pot is None:
-       self.potential = agama.Potential(\
-                          agama.__file__[:agama.__file__.rfind('/')]+\
-                          '/data/McMillan17.ini')
+       self.potential = agama.Potential(agama.__file__[:agama.__file__.rfind('/')]+'/data/McMillan17.ini')
      else:
        self.potential = pot
-     self.actf= agama.ActionFinder(self.potential, interp=False) \
+     print('Agama setup')
+     self.actf= agama.ActionFinder(self.potential, interp=False) 
 
    def printunit(self):
      print('length   :{0:.3e} kpc'.format(self.units['L']))
@@ -597,7 +617,11 @@ class GetKinematicsAll:
 
    def read_clean_data(self,fileformat='fits'):
      ## Read
-     data = table.Table.read(self.infile,format=fileformat)
+     if fileformat == 'hdf5':
+       import vaex
+       data = vaex.open(self.infile).to_astropy_table()
+     else:
+       data = table.Table.read(self.infile,format=fileformat)
      ## Check if columns exist
      for l1,l2 in self.label.items():
        if not l2 in data.columns:
@@ -648,6 +672,9 @@ class GetKinematicsAll:
      elif self.distance_source == 'dist':
        ndatain = len(data)
        data = data[np.array(data[self.label['dist']]) > 0.0]
+       print(f'distance will be multiplied by {self.dist_scale}')
+       data[self.label['dist']] = self.dist_scale*data[self.label['dist']]
+       data[self.label['dist_error']] = self.dist_scale*data[self.label['dist_error']]
        # distance needs to be positive
        if len(data) != ndatain:
          print('distance must be finite and greater than zero'+\
@@ -657,13 +684,13 @@ class GetKinematicsAll:
      ## Store data
      self.inputdata = data
 
-   def get_as_observed(self):
+   def get_as_observed(self,isplit=1,adjust=True):
 
      ## Check if data are already read and stored
      if not hasattr(self,'inputdata'):
         raise AttributeError('Do read_clean_data first')
     
-     isplit = 1 # number of steps (memory is limited) 
+#     isplit = 1 # number of steps (memory is limited) 
      isdone = False
      ntotal = len(self.inputdata)
      istart = 0 # the first index of the step
@@ -727,7 +754,7 @@ class GetKinematicsAll:
                              '\n'
          else: # Just open for istep > 1
            fout = open(self.outasobserved,'a')
-      
+         t1 = time.time() 
          # Write results for this round
          for oneobj_out in zip(np.array(step_input[self.label['unique_id']]),\
                                np.array(step_input[self.label['ra']]),\
@@ -735,6 +762,7 @@ class GetKinematicsAll:
                                *[results[key] for key in outputkeys]):
            fout.write(output_line_fmt.format(*oneobj_out))
          fout.close()
+         print('{0:10.4f} sec for writing files'.format(time.time()-t1))
 
          # if orbits are saved, make a note to the header 
          if not outnpy is None:
@@ -751,18 +779,22 @@ class GetKinematicsAll:
 
        # Catch memory error
        except MemoryError:
-         print('Memory error has been detected')
-         print('Step size increased {0:d} -> {1:d}'.format(isplit,isplit*2))
-         isplit = isplit*2
+         if adjust:
+           print('Memory error has been detected')
+           print('Step size increased {0:d} -> {1:d}'.format(isplit,isplit*2))
+           isplit = isplit*2
+         else: 
+           raise MemoryError
+     return  
          
-   def get_MC_summary(self):
+   def get_MC_summary(self,isplit=1,adjust=True):
 
      ## Check if data are already read and stored
      if not hasattr(self,'inputdata'):
         raise AttributeError('Do read_clean_data first')
    
      nmc = self.nmc 
-     isplit = 1 # number of steps (memory is limited) 
+#     isplit = 1 # number of steps (memory is limited) 
      isdone = False
      ntotal = len(self.inputdata)
      istart = 0 # the first index of the step
@@ -808,7 +840,8 @@ class GetKinematicsAll:
            plxdist_error = step_input[self.label['dist_error']]
            plx_pmra_corr = None
            plx_pmdec_corr = None
-           pmra_pmdec_corr = None
+           pmra_pmdec_corr = step_input[self.label['pmra_pmdec_corr']]
+           #pmra_pmdec_corr = None
            rscale  = None
            isplxdist = 'dist'
          
@@ -879,6 +912,9 @@ class GetKinematicsAll:
 
        # Catch memory error
        except MemoryError:
-         print('Memory error has been detected')
-         print('Step size increased {0:d} -> {1:d}'.format(isplit,isplit*2))
-         isplit = isplit*2
+         if adjust:
+           print('Memory error has been detected')
+           print('Step size increased {0:d} -> {1:d}'.format(isplit,isplit*2))
+           isplit = isplit*2
+         else:
+           raise MemoryError
